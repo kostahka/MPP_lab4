@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace TestsGenerator
 {
-    class TestsFile
+    public class TestsFile
     {
         public string Filename { get; }
 

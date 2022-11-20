@@ -59,10 +59,7 @@ namespace TestsGenerator
                 );
 
         private static TransformManyBlock<string, ClassDeclarationSyntax> CreateSplitClassesBlock() =>
-            new TransformManyBlock<string, ClassDeclarationSyntax>( code => 
-            {
-                return CSharpSyntaxTree.ParseText(code).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>();    
-            } );
+            new TransformManyBlock<string, ClassDeclarationSyntax>( GetClasses );
 
         private static TransformBlock<ClassDeclarationSyntax, TestsFile> CreateTestGeneratorBlock(int maxParallelism) =>
             new TransformBlock<ClassDeclarationSyntax, TestsFile>( GenerateTests,new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
@@ -79,7 +76,11 @@ namespace TestsGenerator
                return file.WriteAsync(testFile.Content);
            }, new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
 
-        private static TestsFile GenerateTests(ClassDeclarationSyntax classDeclaration)
+        public static IEnumerable<ClassDeclarationSyntax> GetClasses(string code)
+        {
+            return CSharpSyntaxTree.ParseText(code).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>();
+        }
+        public static TestsFile GenerateTests(ClassDeclarationSyntax classDeclaration)
         {
             var tab = " ";
 
