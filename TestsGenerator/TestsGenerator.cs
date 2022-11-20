@@ -30,7 +30,7 @@ namespace TestsGenerator
             directoryBlock.Post(options.SourceDirectory);
             directoryBlock.Complete();
 
-            return directoryBlock.Completion;
+            return writeBlock.Completion;
         }
         private static TransformManyBlock<string, string> CreateReadDirectoryBlock() =>
             new TransformManyBlock<string, string>(path =>
@@ -40,7 +40,7 @@ namespace TestsGenerator
                         throw new ArgumentException("Directory doesn't exists");
                     }
 
-                    return Directory.EnumerateFiles(path);
+                    return Directory.EnumerateFiles(path, "*.cs");
                 }
             );
 
@@ -52,8 +52,12 @@ namespace TestsGenerator
                             throw new ArgumentException("File doesn't exist");
                         }
 
-                        var file = File.OpenText(path);
-                        return await file.ReadToEndAsync();
+                        string text = "";
+                        using (var file = File.OpenText(path))
+                        {
+                            text = await file.ReadToEndAsync();
+                        }
+                        return text;
                     }
                 , new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism }
                 );
@@ -72,8 +76,14 @@ namespace TestsGenerator
                    throw new ArgumentException("Directory doesn't exists");
                }
 
-               var file = File.CreateText($"{path}/{testFile.Filename}");
-               return file.WriteAsync(testFile.Content);
+               Task result;
+               using (var file = File.CreateText($"{path}/{testFile.Filename}"))
+               {
+                    result = file.WriteAsync(testFile.Content);
+               }
+
+               return result;
+               
            }, new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
 
         public static IEnumerable<ClassDeclarationSyntax> GetClasses(string code)
