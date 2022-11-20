@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace TestsGenerator
 {
-    class GeneratorOptions
+    public class GeneratorOptions
     {
         public int MaxRead { get; set; } = 5;
 
