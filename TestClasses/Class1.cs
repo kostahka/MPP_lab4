@@ -8,9 +8,9 @@ namespace TestClasses
 {
     public class Class1
     {
-        public void Method1()
+        public string Method1(string s)
         {
-
+            return s;
         }
 
         public void Method2()
@@ -20,9 +20,9 @@ namespace TestClasses
     }
     public class Class2
     {
-        public void Method1()
+        public int Method1(int a, int b)
         {
-
+            return a + b;
         }
 
         public void Method2()

@@ -73,7 +73,7 @@ namespace TestsGeneratorTests
                 .OfType<MethodDeclarationSyntax>()
                 .Count();
 
-            Assert.AreEqual(2, count);
+            Assert.AreEqual(3, count);
         }
     }
 }

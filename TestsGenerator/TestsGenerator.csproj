@@ -79,6 +79,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="GeneratorOptions.cs" />
+    <Compile Include="MethodInfo.cs" />
     <Compile Include="TestsFile.cs" />
     <Compile Include="TestsGenerator.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

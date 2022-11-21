@@ -62,11 +62,11 @@ namespace TestsGenerator
                 , new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism }
                 );
 
-        private static TransformManyBlock<string, ClassDeclarationSyntax> CreateSplitClassesBlock() =>
-            new TransformManyBlock<string, ClassDeclarationSyntax>( GetClasses );
+        private static TransformManyBlock<string, MethodInfo> CreateSplitClassesBlock() =>
+            new TransformManyBlock<string, MethodInfo>( GetClasses );
 
-        private static TransformBlock<ClassDeclarationSyntax, TestsFile> CreateTestGeneratorBlock(int maxParallelism) =>
-            new TransformBlock<ClassDeclarationSyntax, TestsFile>( GenerateTests,new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
+        private static TransformBlock<MethodInfo, TestsFile> CreateTestGeneratorBlock(int maxParallelism) =>
+            new TransformBlock<MethodInfo, TestsFile>( GenerateTests,new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
 
         private static ActionBlock<TestsFile> CreateWriterBlock(string path, int maxParallelism) =>
             new ActionBlock<TestsFile>(testFile =>
@@ -86,18 +86,319 @@ namespace TestsGenerator
                
            }, new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
 
-        public static IEnumerable<ClassDeclarationSyntax> GetClasses(string code)
+        public static IEnumerable<MethodInfo> GetClasses(string code)
         {
-            return CSharpSyntaxTree.ParseText(code).GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>();
+            var root = CSharpSyntaxTree.ParseText(code).GetRoot();
+            return root.DescendantNodes().OfType<ClassDeclarationSyntax>().Select(c =>
+            {
+                return new MethodInfo()
+                {
+                    classDeclaration = c,
+                    usingDirectiveDeclaration = SyntaxFactory.UsingDirective(SyntaxFactory.ParseName(root.DescendantNodes().OfType<NamespaceDeclarationSyntax>().First().Name.ToFullString()))
+                };
+            });
         }
-        public static TestsFile GenerateTests(ClassDeclarationSyntax classDeclaration)
+        public static TestsFile GenerateTests(MethodInfo mInfo)
         {
             var tab = " ";
+
+            var classDeclaration = mInfo.classDeclaration;
 
             var methods = classDeclaration
                 .DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
-                .Where(m => m.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.PublicKeyword))); ;
+                .Where(m => m.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.PublicKeyword)));
+
+            var objectName = classDeclaration.Identifier.Text + "TestObject";
+
+            var methodsDeclars = methods.Select( m =>
+            {
+                bool hasParams = m.ParameterList.Parameters.Count > 0;
+
+                List<LocalDeclarationStatementSyntax> initVars = null;
+                var args = SyntaxFactory.ArgumentList();
+                if (hasParams)
+                {
+                    int n = m.ParameterList.Parameters.Count;
+
+                    foreach (var p in m.ParameterList.Parameters)
+                    {
+                        n--;
+                        if (n > 0)
+                        {
+                            args = args.AddArguments(SyntaxFactory.SeparatedList<ArgumentSyntax>(
+                                                    new SyntaxNodeOrToken[]{
+                                                    SyntaxFactory.Argument(
+                                                        SyntaxFactory.IdentifierName(p.Identifier.Text)),
+                                                    SyntaxFactory.Token(SyntaxKind.CommaToken),
+                                                        }).ToArray());
+                        }
+                        else
+                        {
+                            args = args.AddArguments(SyntaxFactory.SeparatedList<ArgumentSyntax>(
+                                                    new SyntaxNodeOrToken[]{
+                                                    SyntaxFactory.Argument(
+                                                        SyntaxFactory.IdentifierName(p.Identifier.Text)),
+                                                        }).ToArray());
+                        }
+                    }
+
+                    initVars = m.ParameterList.Parameters.Select(p =>
+                    {
+                        return SyntaxFactory.LocalDeclarationStatement(
+                        SyntaxFactory.VariableDeclaration(
+                            p.Type)
+                        .WithVariables(
+                            SyntaxFactory.SingletonSeparatedList<VariableDeclaratorSyntax>(
+                                SyntaxFactory.VariableDeclarator(
+                                    SyntaxFactory.Identifier(p.Identifier.Text))
+                                .WithInitializer(
+                                    SyntaxFactory.EqualsValueClause(
+                                        SyntaxFactory.LiteralExpression(
+                                            SyntaxKind.DefaultLiteralExpression,
+                                            SyntaxFactory.Token(SyntaxKind.DefaultKeyword)))))))
+                        .WithSemicolonToken(SyntaxFactory.Token(
+                            SyntaxFactory.TriviaList(),
+                            SyntaxKind.SemicolonToken,
+                            SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)));
+                    }).ToList() ;
+
+                    initVars[0] = initVars[0].WithLeadingTrivia(SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed,
+                                                SyntaxFactory.Comment("//Arrange")));
+                }
+                
+
+                bool isVoid = ((PredefinedTypeSyntax)m.ReturnType).Keyword.Text.Equals("void");
+
+                var invokeMethod = isVoid ? 
+                SyntaxFactory.ExpressionStatement(SyntaxFactory.InvocationExpression(SyntaxFactory.MemberAccessExpression(
+                                        SyntaxKind.SimpleMemberAccessExpression,
+                                        SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(
+                                            SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.Whitespace(tab + tab + tab)),
+                                        objectName,
+                                            SyntaxFactory.TriviaList())),
+                                        SyntaxFactory.IdentifierName(m.Identifier.Text)))
+                                    .WithArgumentList(
+                                        args
+                                        ))
+                    .WithSemicolonToken(SyntaxFactory.Token(
+                            SyntaxFactory.TriviaList(),
+                            SyntaxKind.SemicolonToken,
+                            SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)))
+                    .WithLeadingTrivia(SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed,
+                                                SyntaxFactory.Comment("//Act")))
+                    as StatementSyntax
+                :
+                SyntaxFactory.LocalDeclarationStatement(
+                    SyntaxFactory.VariableDeclaration(
+                        m.ReturnType)
+                    .WithVariables(
+                        SyntaxFactory.SingletonSeparatedList<VariableDeclaratorSyntax>(
+                            SyntaxFactory.VariableDeclarator(
+                                SyntaxFactory.Identifier(
+                                                "actual"
+                                                ))
+                            .WithInitializer(
+                                SyntaxFactory.EqualsValueClause(
+                                    SyntaxFactory.InvocationExpression(SyntaxFactory.MemberAccessExpression(
+                                        SyntaxKind.SimpleMemberAccessExpression,
+                                        SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(
+                                            objectName)),
+                                        SyntaxFactory.IdentifierName(m.Identifier.Text)))
+                                    .WithArgumentList(
+                                        args
+                                        )
+                                    )))))
+                .WithSemicolonToken(SyntaxFactory.Token(
+                        SyntaxFactory.TriviaList(),
+                        SyntaxKind.SemicolonToken,
+                        SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed, SyntaxFactory.CarriageReturnLineFeed)))
+                .WithLeadingTrivia(SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed,
+                                                SyntaxFactory.Comment("//Act")))
+                ;
+
+                LocalDeclarationStatementSyntax expVar = null;
+                ExpressionStatementSyntax assertInvoke = null;
+                if (!isVoid)
+                {
+                    expVar = SyntaxFactory.LocalDeclarationStatement(
+                        SyntaxFactory.VariableDeclaration(
+                            m.ReturnType)
+                        .WithVariables(
+                            SyntaxFactory.SingletonSeparatedList<VariableDeclaratorSyntax>(
+                                SyntaxFactory.VariableDeclarator(
+                                    SyntaxFactory.Identifier("expected"))
+                                .WithInitializer(
+                                    SyntaxFactory.EqualsValueClause(
+                                        SyntaxFactory.LiteralExpression(
+                                            SyntaxKind.DefaultLiteralExpression,
+                                            SyntaxFactory.Token(SyntaxKind.DefaultKeyword)))))))
+                    .WithSemicolonToken(SyntaxFactory.Token(
+                            SyntaxFactory.TriviaList(),
+                            SyntaxKind.SemicolonToken,
+                            SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)));
+                    
+                    assertInvoke = SyntaxFactory.ExpressionStatement(SyntaxFactory
+                        .InvocationExpression(SyntaxFactory.MemberAccessExpression(
+                            SyntaxKind.SimpleMemberAccessExpression,
+                            SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(
+                                SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(tab + tab + tab)),
+                            "Assert",
+                                SyntaxFactory.TriviaList())),
+                            SyntaxFactory.IdentifierName("That")))
+                        .WithArgumentList(
+                            SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList<ArgumentSyntax>(
+                                        new SyntaxNodeOrToken[]
+                                        {
+                                            SyntaxFactory.Argument(SyntaxFactory.IdentifierName("actual")),
+                                            SyntaxFactory.Token(SyntaxKind.CommaToken),
+                                            SyntaxFactory.Argument((SyntaxFactory
+                                            .InvocationExpression(SyntaxFactory.MemberAccessExpression(
+                                                SyntaxKind.SimpleMemberAccessExpression,
+                                                SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(
+                                                    SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(tab + tab + tab)),
+                                                "Is",
+                                                    SyntaxFactory.TriviaList())),
+                                                SyntaxFactory.IdentifierName("EqualTo")))
+                                            .WithArgumentList(
+                                                SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList<ArgumentSyntax>(
+                                                            new SyntaxNodeOrToken[]
+                                                            {
+                                                                SyntaxFactory.Argument(SyntaxFactory.IdentifierName("expected"))
+                                                            })))))
+                                        }))))
+                        .WithSemicolonToken(SyntaxFactory.Token(
+                            SyntaxFactory.TriviaList(),
+                            SyntaxKind.SemicolonToken,
+                            SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)));
+                }
+                    
+
+                
+
+                var secondAssertInvoke = SyntaxFactory.ExpressionStatement(SyntaxFactory
+                    .InvocationExpression(SyntaxFactory.MemberAccessExpression(
+                        SyntaxKind.SimpleMemberAccessExpression,
+                        SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(
+                            SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(tab + tab + tab)),
+                        "Assert",
+                            SyntaxFactory.TriviaList())),
+                        SyntaxFactory.IdentifierName("Fail")))
+                    .WithArgumentList(
+                        SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList<ArgumentSyntax>(
+                                    new SyntaxNodeOrToken[]
+                                    {
+                                        SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(
+                                                SyntaxKind.StringLiteralExpression,
+                                                SyntaxFactory.Literal("autogenerated")))
+                                    }))))
+                    .WithSemicolonToken(SyntaxFactory.Token(
+                            SyntaxFactory.TriviaList(),
+                            SyntaxKind.SemicolonToken,
+                            SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)));
+
+                List<StatementSyntax> statements = new List<StatementSyntax>();
+
+                if (hasParams)
+                    statements.AddRange(initVars);
+                statements.Add(invokeMethod);
+                if (!isVoid)
+                {
+                    statements.Add(expVar
+                        .WithLeadingTrivia(SyntaxFactory.Comment("//Assert")));
+                    statements.Add(assertInvoke);
+                    statements.Add(secondAssertInvoke);
+                }
+                else
+                {
+                    statements.Add(secondAssertInvoke.WithLeadingTrivia(SyntaxFactory.Comment("//Assert")));
+                }
+                
+
+                return SyntaxFactory
+                            .MethodDeclaration(
+                                SyntaxFactory.PredefinedType(
+                                    SyntaxFactory.Token(
+                                        SyntaxFactory.TriviaList(),
+                                        SyntaxKind.VoidKeyword,
+                                        SyntaxFactory.TriviaList(SyntaxFactory.Space))),
+                                    SyntaxFactory.Identifier(m.Identifier.Text + "Test"))
+                            .WithAttributeLists(SyntaxFactory.SingletonList(SyntaxFactory
+                                .AttributeList(SyntaxFactory.SingletonSeparatedList(SyntaxFactory.Attribute(SyntaxFactory.IdentifierName("Test"))))
+                                .WithOpenBracketToken(SyntaxFactory.Token(
+                                    SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(tab + tab)),
+                                    SyntaxKind.OpenBracketToken,
+                                    SyntaxFactory.TriviaList()))
+                                .WithCloseBracketToken(SyntaxFactory.Token(
+                                    SyntaxFactory.TriviaList(),
+                                    SyntaxKind.CloseBracketToken,
+                                    SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)))))
+                                .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxFactory.TriviaList(
+                                    SyntaxFactory.Whitespace(tab + tab)),
+                                    SyntaxKind.PublicKeyword,
+                                    SyntaxFactory.TriviaList(SyntaxFactory.Space))))
+                                .WithParameterList(SyntaxFactory.ParameterList().WithCloseParenToken(
+                                    SyntaxFactory.Token(SyntaxFactory.TriviaList(),
+                                    SyntaxKind.CloseParenToken,
+                                    SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed))))
+                                .WithBody(SyntaxFactory
+                                .Block(statements)
+                                .WithOpenBraceToken(SyntaxFactory.Token(SyntaxFactory.TriviaList(
+                                    SyntaxFactory.Whitespace(tab + tab)),
+                                    SyntaxKind.OpenBraceToken,
+                                    SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)))
+                                .WithCloseBraceToken(SyntaxFactory.Token(SyntaxFactory.TriviaList(
+                                    SyntaxFactory.Whitespace(tab + tab)),
+                                    SyntaxKind.CloseBraceToken,
+                                    SyntaxFactory.TriviaList(
+                                        SyntaxFactory.CarriageReturnLineFeed,
+                                        SyntaxFactory.Whitespace(""),
+                                        SyntaxFactory.CarriageReturnLineFeed))));
+            }
+            );
+
+            var setUpMethod = SyntaxFactory.MethodDeclaration(
+                                SyntaxFactory.PredefinedType(
+                                    SyntaxFactory.Token(SyntaxKind.VoidKeyword)),
+                                SyntaxFactory.Identifier("SetUp"))
+                            .WithAttributeLists(
+                                SyntaxFactory.SingletonList<AttributeListSyntax>(
+                                    SyntaxFactory.AttributeList(
+                                        SyntaxFactory.SingletonSeparatedList<AttributeSyntax>(
+                                            SyntaxFactory.Attribute(
+                                                SyntaxFactory.IdentifierName("SetUp"))))))
+                            .WithModifiers(
+                                SyntaxFactory.TokenList(
+                                    SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
+                            .WithBody(
+                                SyntaxFactory.Block(
+                                    /*SyntaxFactory.ExpressionStatement(
+                                        SyntaxFactory.AssignmentExpression(
+                                            SyntaxKind.SimpleAssignmentExpression,
+                                            SyntaxFactory.IdentifierName("_dependency"),
+                                            SyntaxFactory.ObjectCreationExpression(
+                                                SyntaxFactory.GenericName(
+                                                    SyntaxFactory.Identifier("Mock"))
+                                                .WithTypeArgumentList(
+                                                    SyntaxFactory.TypeArgumentList(
+                                                        SyntaxFactory.SingletonSeparatedList<TypeSyntax>(
+                                                            SyntaxFactory.IdentifierName("IDependency")))))
+                                            .WithArgumentList(
+                                                SyntaxFactory.ArgumentList()))),*/
+                                    SyntaxFactory.ExpressionStatement(
+                                        SyntaxFactory.AssignmentExpression(
+                                            SyntaxKind.SimpleAssignmentExpression,
+                                            SyntaxFactory.IdentifierName(objectName),
+                                            SyntaxFactory.ObjectCreationExpression(
+                                                SyntaxFactory.IdentifierName(classDeclaration.Identifier.Text))
+                                            .WithArgumentList(
+                                                SyntaxFactory.ArgumentList(
+                                                    /*SyntaxFactory.SingletonSeparatedList<ArgumentSyntax>(
+                                                        SyntaxFactory.Argument(
+                                                            SyntaxFactory.MemberAccessExpression(
+                                                                SyntaxKind.SimpleMemberAccessExpression,
+                                                                SyntaxFactory.IdentifierName("_dependency"),
+                                                                SyntaxFactory.IdentifierName("Object"))))*/))))));
 
             var testCode = SyntaxFactory.CompilationUnit()
             .AddUsings(
@@ -120,7 +421,8 @@ namespace TestsGenerator
                     SyntaxFactory.IdentifierName("NUnit"),
                     SyntaxFactory.IdentifierName("Framework")
                 )),
-                SyntaxFactory.UsingDirective(SyntaxFactory.IdentifierName("Autogenerated"))
+                SyntaxFactory.UsingDirective(SyntaxFactory.IdentifierName("Autogenerated")),
+                mInfo.usingDirectiveDeclaration
                 )
             .AddMembers(
                 SyntaxFactory.NamespaceDeclaration(
@@ -173,69 +475,19 @@ namespace TestsGenerator
                             SyntaxKind.CloseBraceToken,
                             SyntaxFactory.TriviaList()))
                     .AddMembers(
-                            methods.Select( m => 
-                            SyntaxFactory
-                            .MethodDeclaration(
-                                SyntaxFactory.PredefinedType(
-                                    SyntaxFactory.Token(
-                                        SyntaxFactory.TriviaList(),
-                                        SyntaxKind.VoidKeyword,
-                                        SyntaxFactory.TriviaList(SyntaxFactory.Space))),
-                                    SyntaxFactory.Identifier(m.Identifier.Text + "Test"))
-                            .WithAttributeLists(SyntaxFactory.SingletonList(SyntaxFactory
-                                .AttributeList(SyntaxFactory.SingletonSeparatedList(SyntaxFactory.Attribute(SyntaxFactory.IdentifierName("Test"))))
-                                .WithOpenBracketToken(SyntaxFactory.Token(
-                                    SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(tab + tab)),
-                                    SyntaxKind.OpenBracketToken,
-                                    SyntaxFactory.TriviaList()))
-                                .WithCloseBracketToken(SyntaxFactory.Token(
-                                    SyntaxFactory.TriviaList(),
-                                    SyntaxKind.CloseBracketToken,
-                                    SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)))))
-                                .WithModifiers(SyntaxFactory.TokenList(SyntaxFactory.Token(SyntaxFactory.TriviaList(
-                                    SyntaxFactory.Whitespace(tab + tab)),
-                                    SyntaxKind.PublicKeyword,
-                                    SyntaxFactory.TriviaList(SyntaxFactory.Space))))
-                                .WithParameterList(SyntaxFactory.ParameterList().WithCloseParenToken(
-                                    SyntaxFactory.Token(SyntaxFactory.TriviaList(),
-                                    SyntaxKind.CloseParenToken,
-                                    SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed))))
-                                .WithBody(SyntaxFactory
-                                .Block()
-                                .WithOpenBraceToken(SyntaxFactory.Token(SyntaxFactory.TriviaList(
-                                    SyntaxFactory.Whitespace(tab + tab)),
-                                    SyntaxKind.OpenBraceToken,
-                                    SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed)))
-                                .WithCloseBraceToken(SyntaxFactory.Token(SyntaxFactory.TriviaList(
-                                    SyntaxFactory.Whitespace(tab + tab)),
-                                    SyntaxKind.CloseBraceToken,
-                                    SyntaxFactory.TriviaList(
-                                        SyntaxFactory.CarriageReturnLineFeed,
-                                        SyntaxFactory.Whitespace(""),
-                                        SyntaxFactory.CarriageReturnLineFeed))))
-                                .AddBodyStatements(SyntaxFactory.ExpressionStatement(SyntaxFactory
-                                    .InvocationExpression(SyntaxFactory.MemberAccessExpression(
-                                        SyntaxKind.SimpleMemberAccessExpression,
-                                        SyntaxFactory.IdentifierName(SyntaxFactory.Identifier(
-                                            SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(tab + tab + tab)),
-                                        "Assert",
-                                            SyntaxFactory.TriviaList())),
-                                        SyntaxFactory.IdentifierName("Fail")))
-                                    .WithArgumentList(
-                                        SyntaxFactory.ArgumentList(SyntaxFactory.SeparatedList<ArgumentSyntax>(
-                                                    new SyntaxNodeOrToken[]
-                                                    {
-                                                        SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(
-                                                                SyntaxKind.StringLiteralExpression,
-                                                                SyntaxFactory.Literal("autogenerated")))
-                                                    }))))
-                                    .WithSemicolonToken(SyntaxFactory.Token(
-                                        SyntaxFactory.TriviaList(),
-                                        SyntaxKind.SemicolonToken,
-                                        SyntaxFactory.TriviaList(SyntaxFactory.CarriageReturnLineFeed))))
-                            ).Cast<MethodDeclarationSyntax>()
-                            .ToArray()
+                            SyntaxFactory.FieldDeclaration(
+                                SyntaxFactory.VariableDeclaration(
+                                    SyntaxFactory.IdentifierName(classDeclaration.Identifier))
+                                .WithVariables(
+                                    SyntaxFactory.SingletonSeparatedList<VariableDeclaratorSyntax>(
+                                        SyntaxFactory.VariableDeclarator(
+                                            SyntaxFactory.Identifier(objectName)))))
+                            .WithModifiers(
+                                SyntaxFactory.TokenList(
+                                    SyntaxFactory.Token(SyntaxKind.PrivateKeyword)))
                         )
+                    .AddMembers(setUpMethod)
+                    .AddMembers(methodsDeclars.ToArray())
                     )
                 )
             .NormalizeWhitespace();
