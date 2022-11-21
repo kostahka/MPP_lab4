@@ -69,20 +69,19 @@ namespace TestsGenerator
             new TransformBlock<MethodInfo, TestsFile>( GenerateTests,new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
 
         private static ActionBlock<TestsFile> CreateWriterBlock(string path, int maxParallelism) =>
-            new ActionBlock<TestsFile>(testFile =>
+            new ActionBlock<TestsFile>( async testFile =>
            {
                if (!Directory.Exists(path))
                {
                    throw new ArgumentException("Directory doesn't exists");
                }
 
-               Task result;
                using (var file = File.CreateText($"{path}/{testFile.Filename}"))
                {
-                    result = file.WriteAsync(testFile.Content);
+                    await file.WriteAsync(testFile.Content);
                }
 
-               return result;
+               return;
                
            }, new ExecutionDataflowBlockOptions() { MaxDegreeOfParallelism = maxParallelism });
 
@@ -357,6 +356,71 @@ namespace TestsGenerator
             }
             );
 
+            var ctrs = classDeclaration.DescendantNodes().OfType<ConstructorDeclarationSyntax>().OrderByDescending( ct => ct.ParameterList.Parameters.Count);
+            ConstructorDeclarationSyntax ourCtr = null;
+            foreach(var ctr in ctrs){
+                foreach(var arg in ctr.ParameterList.Parameters)
+                {
+                    if(arg.Type.ToString()[0] == 'I' && char.IsUpper(arg.Type.ToString()[1]))
+                    {
+                        ourCtr = ctr;
+                        break;
+                    }
+                }
+            }
+
+            IEnumerable<FieldDeclarationSyntax> mockFields = new List<FieldDeclarationSyntax>();
+            IEnumerable<ExpressionStatementSyntax> initMocks = new List<ExpressionStatementSyntax>();
+            IEnumerable<ArgumentSyntax> initObjArgs = new List<ArgumentSyntax>();
+
+            if(ourCtr != null)
+            {
+                mockFields = ourCtr.ParameterList.Parameters.Select(p =>
+                {
+                    return SyntaxFactory.FieldDeclaration(
+                                     SyntaxFactory.VariableDeclaration(
+                                         SyntaxFactory.GenericName(
+                                             SyntaxFactory.Identifier("Mock"))
+                                         .WithTypeArgumentList(
+                                             SyntaxFactory.TypeArgumentList(
+                                                 SyntaxFactory.SingletonSeparatedList<TypeSyntax>(
+                                                     SyntaxFactory.IdentifierName(p.Type.ToString())))))
+                                     .WithVariables(
+                                         SyntaxFactory.SingletonSeparatedList<VariableDeclaratorSyntax>(
+                                             SyntaxFactory.VariableDeclarator(
+                                                 SyntaxFactory.Identifier(p.Identifier.Text)))))
+                                 .WithModifiers(
+                                     SyntaxFactory.TokenList(
+                                         SyntaxFactory.Token(SyntaxKind.PrivateKeyword)));
+                });
+
+                initMocks = ourCtr.ParameterList.Parameters.Select(p =>
+                {
+                    return SyntaxFactory.ExpressionStatement(
+                                            SyntaxFactory.AssignmentExpression(
+                                                SyntaxKind.SimpleAssignmentExpression,
+                                                SyntaxFactory.IdentifierName(p.Identifier.Text),
+                                                SyntaxFactory.ObjectCreationExpression(
+                                                    SyntaxFactory.GenericName(
+                                                        SyntaxFactory.Identifier("Mock"))
+                                                    .WithTypeArgumentList(
+                                                        SyntaxFactory.TypeArgumentList(
+                                                            SyntaxFactory.SingletonSeparatedList<TypeSyntax>(
+                                                                SyntaxFactory.IdentifierName(p.Type.ToString())))))
+                                                .WithArgumentList(
+                                                    SyntaxFactory.ArgumentList())));
+                });
+
+                initObjArgs = ourCtr.ParameterList.Parameters.Select(p =>
+                {
+                    return SyntaxFactory.Argument(
+                            SyntaxFactory.MemberAccessExpression(
+                                SyntaxKind.SimpleMemberAccessExpression,
+                                SyntaxFactory.IdentifierName(p.Identifier.Text),
+                                SyntaxFactory.IdentifierName("Object")));
+                });
+            }
+
             var setUpMethod = SyntaxFactory.MethodDeclaration(
                                 SyntaxFactory.PredefinedType(
                                     SyntaxFactory.Token(SyntaxKind.VoidKeyword)),
@@ -372,20 +436,9 @@ namespace TestsGenerator
                                     SyntaxFactory.Token(SyntaxKind.PublicKeyword)))
                             .WithBody(
                                 SyntaxFactory.Block(
-                                    /*SyntaxFactory.ExpressionStatement(
-                                        SyntaxFactory.AssignmentExpression(
-                                            SyntaxKind.SimpleAssignmentExpression,
-                                            SyntaxFactory.IdentifierName("_dependency"),
-                                            SyntaxFactory.ObjectCreationExpression(
-                                                SyntaxFactory.GenericName(
-                                                    SyntaxFactory.Identifier("Mock"))
-                                                .WithTypeArgumentList(
-                                                    SyntaxFactory.TypeArgumentList(
-                                                        SyntaxFactory.SingletonSeparatedList<TypeSyntax>(
-                                                            SyntaxFactory.IdentifierName("IDependency")))))
-                                            .WithArgumentList(
-                                                SyntaxFactory.ArgumentList()))),*/
-                                    SyntaxFactory.ExpressionStatement(
+                                    initMocks
+                                    )
+                                .AddStatements(SyntaxFactory.ExpressionStatement(
                                         SyntaxFactory.AssignmentExpression(
                                             SyntaxKind.SimpleAssignmentExpression,
                                             SyntaxFactory.IdentifierName(objectName),
@@ -393,12 +446,8 @@ namespace TestsGenerator
                                                 SyntaxFactory.IdentifierName(classDeclaration.Identifier.Text))
                                             .WithArgumentList(
                                                 SyntaxFactory.ArgumentList(
-                                                    /*SyntaxFactory.SingletonSeparatedList<ArgumentSyntax>(
-                                                        SyntaxFactory.Argument(
-                                                            SyntaxFactory.MemberAccessExpression(
-                                                                SyntaxKind.SimpleMemberAccessExpression,
-                                                                SyntaxFactory.IdentifierName("_dependency"),
-                                                                SyntaxFactory.IdentifierName("Object"))))*/))))));
+                                                    )
+                                                .AddArguments(initObjArgs.ToArray()))))));
 
             var testCode = SyntaxFactory.CompilationUnit()
             .AddUsings(
@@ -421,6 +470,7 @@ namespace TestsGenerator
                     SyntaxFactory.IdentifierName("NUnit"),
                     SyntaxFactory.IdentifierName("Framework")
                 )),
+                SyntaxFactory.UsingDirective(SyntaxFactory.ParseName("Moq")),
                 SyntaxFactory.UsingDirective(SyntaxFactory.IdentifierName("Autogenerated")),
                 mInfo.usingDirectiveDeclaration
                 )
@@ -474,6 +524,7 @@ namespace TestsGenerator
                             SyntaxFactory.TriviaList(SyntaxFactory.Whitespace(tab)),
                             SyntaxKind.CloseBraceToken,
                             SyntaxFactory.TriviaList()))
+                    .AddMembers(mockFields.ToArray())
                     .AddMembers(
                             SyntaxFactory.FieldDeclaration(
                                 SyntaxFactory.VariableDeclaration(

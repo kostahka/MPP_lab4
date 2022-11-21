@@ -6,11 +6,20 @@ using System.Threading.Tasks;
 
 namespace TestClasses
 {
+    public interface IInterface1
+    {
+        int GetNum();
+    }
     public class Class1
     {
+        private IInterface1 interface1;
+        public Class1(IInterface1 interface1)
+        {
+            this.interface1 = interface1;
+        }
         public string Method1(string s)
         {
-            return s;
+            return s + interface1.GetNum();
         }
 
         public void Method2()
